@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0a0d12">
+<title>車窓ラン</title>
+<style>
+  :root{
+    --bg:#0a0d12;
+    --fg:#e8eef5;
+    --dim:#8996a6;
+    --line:#7fd8ff;
+    --accent:#ffd66b;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+    -webkit-user-select:none;user-select:none;overscroll-behavior:none}
+  #view{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+  video{display:none}
+
+  /* ---- HUD ---- */
+  #hud{position:fixed;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top) + 12px) 14px 0;
+    display:flex;align-items:flex-start;justify-content:space-between;pointer-events:none;
+    font-variant-numeric:tabular-nums}
+  .stat{background:rgba(10,13,18,.42);backdrop-filter:blur(6px);
+    border:1px solid rgba(232,238,245,.13);border-radius:10px;padding:7px 11px;line-height:1.15}
+  .stat b{display:block;font-size:19px;font-weight:600;letter-spacing:.02em}
+  .stat span{display:block;font-size:9.5px;color:var(--dim);letter-spacing:.16em}
+  .stat.right{text-align:right}
+  #menuBtn{pointer-events:auto;background:rgba(10,13,18,.42);backdrop-filter:blur(6px);
+    border:1px solid rgba(232,238,245,.13);color:var(--fg);border-radius:10px;
+    width:38px;height:38px;font-size:15px;cursor:pointer}
+
+  /* ---- panels ---- */
+  .sheet{position:fixed;inset:0;background:rgba(6,8,12,.9);backdrop-filter:blur(14px);
+    display:flex;flex-direction:column;justify-content:center;align-items:center;
+    padding:24px;gap:16px;z-index:10;overflow-y:auto}
+  .sheet.hidden{display:none}
+  .card{width:100%;max-width:400px}
+  h1{font-size:25px;font-weight:600;letter-spacing:.06em;margin-bottom:6px}
+  h1 small{display:block;font-size:11px;letter-spacing:.2em;color:var(--line);
+    font-weight:400;margin-bottom:8px}
+  p.lead{font-size:13px;line-height:1.85;color:var(--dim);margin-bottom:22px}
+  p.lead em{color:var(--fg);font-style:normal}
+
+  button.big{display:block;width:100%;padding:15px;border-radius:12px;border:none;
+    background:var(--fg);color:#0a0d12;font-size:15px;font-weight:600;letter-spacing:.05em;
+    cursor:pointer;margin-bottom:10px}
+  button.ghost{display:block;width:100%;padding:13px;border-radius:12px;
+    border:1px solid rgba(232,238,245,.22);background:transparent;color:var(--fg);
+    font-size:13.5px;letter-spacing:.05em;cursor:pointer}
+
+  .note{font-size:11px;line-height:1.8;color:#6b7787;margin-top:18px;
+    border-left:2px solid rgba(255,214,107,.4);padding-left:10px}
+
+  /* ---- settings ---- */
+  .row{margin-bottom:18px}
+  .row>label{display:block;font-size:10.5px;letter-spacing:.16em;color:var(--dim);margin-bottom:8px}
+  .seg{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+  .seg button{padding:11px 4px;border-radius:9px;border:1px solid rgba(232,238,245,.16);
+    background:transparent;color:var(--dim);font-size:12px;cursor:pointer;line-height:1.4}
+  .seg button.on{background:rgba(127,216,255,.14);border-color:var(--line);color:var(--line)}
+  .seg button i{display:block;font-style:normal;font-size:9px;letter-spacing:.06em;opacity:.6;margin-top:2px}
+  input[type=range]{width:100%;accent-color:var(--line);height:26px}
+  .val{float:right;font-size:11px;color:var(--line);font-variant-numeric:tabular-nums}
+  .toggles{display:flex;gap:8px}
+  .toggles button{flex:1;padding:10px;border-radius:9px;border:1px solid rgba(232,238,245,.16);
+    background:transparent;color:var(--dim);font-size:12px;cursor:pointer}
+  .toggles button.on{background:rgba(127,216,255,.14);border-color:var(--line);color:var(--line)}
+
+  #flash{position:fixed;inset:0;pointer-events:none;background:#fff;opacity:0;
+    transition:opacity .25s}
+</style>
+</head>
+<body>
+
+<canvas id="view"></canvas>
+<video id="cam" playsinline muted autoplay></video>
+<div id="flash"></div>
+
+<div id="hud">
+  <div class="stat"><b id="dist">0</b><span>DISTANCE m</span></div>
+  <button id="menuBtn">⚙</button>
+  <div class="stat right"><b id="trip">0</b><span>つまずき</span></div>
+</div>
+
+<!-- スタート -->
+<div class="sheet" id="start">
+  <div class="card">
+    <h1><small>SHASOU  RUN</small>車窓ラン</h1>
+    <p class="lead">
+      カメラに映った景色の<em>輪郭</em>が、そのまま地面になります。<br>
+      窓の外へ向けてください。小さなキャラクターが、流れる景色の上を跳ねていきます。<br><br>
+      <em>タップでジャンプ。長押しで高く。</em>
+    </p>
+    <button class="big" id="btnCam">カメラで始める</button>
+    <button class="ghost" id="btnDemo">デモで試す（カメラなし）</button>
+    <p class="note">
+      映像は端末の外に一切送信されません。すべてブラウザの中で処理されます。<br>
+      運転中は絶対に使用しないでください。
+    </p>
+    <p class="note" id="err" style="display:none;border-color:#ff7b7b;color:#ff9b9b"></p>
+  </div>
+</div>
+
+<!-- 設定 -->
+<div class="sheet hidden" id="panel">
+  <div class="card">
+    <div class="row">
+      <label>地面のとらえかた</label>
+      <div class="seg" id="segMode">
+        <button data-m="sky" class="on">空<i>SKY</i></button>
+        <button data-m="edge">輪郭<i>EDGE</i></button>
+        <button data-m="dark">暗<i>DARK</i></button>
+        <button data-m="bright">明<i>LIGHT</i></button>
+      </div>
+    </div>
+    <div class="row">
+      <label>感度 <span class="val" id="vThr"></span></label>
+      <input type="range" id="rThr" min="10" max="220" step="2">
+    </div>
+    <div class="row">
+      <label>地形の追従 <span class="val" id="vSm"></span></label>
+      <input type="range" id="rSm" min="10" max="100" step="5">
+    </div>
+    <div class="row">
+      <label>表示</label>
+      <div class="toggles">
+        <button id="tTerrain" class="on">地形の線</button>
+        <button id="tMask">認識マスク</button>
+      </div>
+    </div>
+    <button class="big" id="btnClose">とじる</button>
+    <button class="ghost" id="btnReset">記録をリセット</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+/* =======================================================================
+   車窓ラン v1
+   カメラ映像の稜線を高さフィールド h[] に変換し、その上でキャラを走らせる。
+   詳細な設計意図は 技術検討.md を参照。
+   ======================================================================= */
+
+const view = document.getElementById('view');
+const ctx  = view.getContext('2d');
+const cam  = document.getElementById('cam');
+
+/* 処理用の縮小キャンバス（幅160固定） */
+const S_W = 160;
+let   S_H = 90;
+const small  = document.createElement('canvas');
+const sctx   = small.getContext('2d', { willReadFrequently:true });
+
+const cfg = { mode:'sky', thr:90, smooth:45, terrain:true, mask:false };
+const state = {
+  source:'none',      // 'cam' | 'demo'
+  cw:0, ch:0, dpr:1,
+  running:false,
+  dist:0, trip:0,
+  t:0, last:0,
+};
+
+/* 地形バッファ */
+let hRaw, hSm, colNow, colPrev, maskBuf;
+function allocBuffers(){
+  hRaw = new Float32Array(S_W);
+  hSm  = new Float32Array(S_W);
+  colNow  = new Float32Array(S_W);
+  colPrev = new Float32Array(S_W);
+  maskBuf = new Uint8Array(S_W * S_H);
+  hRaw.fill(S_H); hSm.fill(S_H);
+}
+
+/* 流れ（オプティカルフロー） */
+let flowPx = 0;      // 縮小画像上での1フレーム横移動量
+let flowOK = false;
+
+/* ---------------------------------------------------------------- 画面 */
+function resize(){
+  state.cw = Math.max(1, window.innerWidth  || document.documentElement.clientWidth);
+  state.ch = Math.max(1, window.innerHeight || document.documentElement.clientHeight);
+  state.dpr = Math.min(window.devicePixelRatio || 1, 2);
+  view.width  = Math.round(state.cw * state.dpr);
+  view.height = Math.round(state.ch * state.dpr);
+  ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
+
+  S_H = Math.max(24, Math.round(S_W * state.ch / state.cw));
+  small.width = S_W; small.height = S_H;
+  allocBuffers();
+
+  hero.r = Math.max(9, Math.min(state.cw, state.ch) * 0.028);
+  hero.homeX = state.cw * 0.36;
+  if (!state.running) hero.x = hero.homeX;
+}
+window.addEventListener('resize', resize);
+
+/* ------------------------------------------------------------ キャラ */
+const hero = {
+  x:0, y:0, vy:0, r:14, homeX:0,
+  holding:false, holdT:0,
+  squash:1, blocked:0, face:1,
+  bigJump:false,    // 小さな自動ホップ中はいつでも大ジャンプに切り替えられる
+  fallT:0,          // >0 のあいだ「つまずき」演出
+};
+
+function G(){ return state.ch * 2.6; }          // 重力
+const V_HOP  = 0.42;                             // 自動ホップ初速（×ch）
+const V_JUMP = 0.97;                             // タップジャンプ初速（×ch）
+
+/* --------------------------------------------------------- 地形の抽出 */
+function analyze(){
+  const img = sctx.getImageData(0, 0, S_W, S_H);
+  const d = img.data;
+  const thr = cfg.thr;
+
+  const needMask = cfg.mask;
+  if (needMask) maskBuf.fill(0);
+
+  for (let x=0; x<S_W; x++){
+    let found = S_H;
+    let run = 0;                       // 条件を満たした連続画素数
+
+    /* 空モードの基準色。
+       上端の色を固定基準にすると、実際の空が持つ「地平線に近いほど明るい」
+       グラデーションを丸ごと地面と誤検出してしまう。
+       そこで列ごとに、上から下へ「これまで見てきた色」を追従させる基準にする。
+       ゆるやかな変化は基準が吸収し、建物の縁のような急な変化だけが残る。 */
+    let rr = d[x*4], rg = d[x*4+1], rb = d[x*4+2];
+
+    for (let y=0; y<S_H; y++){
+      const i = (y*S_W+x)*4;
+      const r=d[i], g=d[i+1], b=d[i+2];
+      const gray = (r*77 + g*150 + b*29) >> 8;
+      let hit = false;
+
+      switch(cfg.mode){
+        case 'sky':
+          hit = (Math.abs(r-rr)+Math.abs(g-rg)+Math.abs(b-rb)) > thr;
+          if (!hit){                    // 一致している間だけ基準を更新する
+            rr += (r-rr)*0.25; rg += (g-rg)*0.25; rb += (b-rb)*0.25;
+          }
+          break;
+        case 'edge': {
+          if (y>=2 && y<S_H-2){
+            const a=(d[((y-2)*S_W+x)*4]*77 + d[((y-2)*S_W+x)*4+1]*150 + d[((y-2)*S_W+x)*4+2]*29)>>8;
+            const c=(d[((y+2)*S_W+x)*4]*77 + d[((y+2)*S_W+x)*4+1]*150 + d[((y+2)*S_W+x)*4+2]*29)>>8;
+            hit = Math.abs(a-c) > thr*0.55;
+          }
+          break;
+        }
+        case 'dark':   hit = gray < thr;        break;
+        case 'bright': hit = gray > (255-thr);  break;
+      }
+
+      if (needMask && hit) maskBuf[y*S_W+x] = 1;
+
+      if (hit){
+        run++;
+        if (run >= 3){ found = y - 2; break; }   // 3画素連続で確定（ノイズ除け）
+      } else run = 0;
+    }
+    /* 天井。モードや感度が環境に合っていないと地形が画面最上部に貼り付き、
+       キャラが永久に埋まって延々つまずき続ける。走れる帯を必ず残しておく。 */
+    hRaw[x] = Math.max(found, S_H*0.10);
+  }
+
+  /* 空間平滑（幅5の移動平均）: 1列だけ跳ねた誤検出をならす */
+  const tmp = new Float32Array(S_W);
+  for (let x=0; x<S_W; x++){
+    let s=0, n=0;
+    for (let k=-2; k<=2; k++){
+      const j = x+k;
+      if (j>=0 && j<S_W){ s+=hRaw[j]; n++; }
+    }
+    tmp[x] = s/n;
+  }
+
+  /* 時間平滑 */
+  const a = cfg.smooth/100;
+  for (let x=0; x<S_W; x++) hSm[x] += (tmp[x]-hSm[x]) * a;
+
+  /* ---- 横の流れを測る（中央帯の列輝度和を1次元相関） ---- */
+  const y0 = (S_H*0.25)|0, y1 = (S_H*0.75)|0;
+  for (let x=0; x<S_W; x++){
+    let s=0;
+    for (let y=y0; y<y1; y++){
+      const i=(y*S_W+x)*4;
+      s += (d[i]*77 + d[i+1]*150 + d[i+2]*29) >> 8;
+    }
+    colNow[x] = s/(y1-y0);
+  }
+  if (flowOK){
+    const R=14;
+    const errs = new Float32Array(R*2+1);
+    let best=0, bestErr=Infinity;
+    for (let s=-R; s<=R; s++){
+      let err=0, n=0;
+      for (let x=R; x<S_W-R; x++){ err += Math.abs(colNow[x]-colPrev[x-s]); n++; }
+      err/=n; errs[s+R]=err;
+      if (err < bestErr){ bestErr=err; best=s; }
+    }
+    /* 放物線あてはめでサブピクセル化。ゆっくりした流れがカクつかなくなる */
+    let sub = best;
+    const bi = best+R;
+    if (bi>0 && bi<R*2){
+      const a=errs[bi-1], b=errs[bi], c=errs[bi+1];
+      const den = a - 2*b + c;
+      if (den > 0.0001) sub = best + Math.max(-0.5, Math.min(0.5, (a-c)/(2*den)));
+    }
+    /* 特徴が乏しいフレーム（真っ白な空など）では相関が意味を持たないので捨てる */
+    let flat=0;
+    for (let x=1; x<S_W; x++) flat += Math.abs(colNow[x]-colNow[x-1]);
+    flat /= S_W;
+    const raw = (flat < 1.2) ? 0 : sub;
+    flowPx += (raw - flowPx) * 0.35;
+    if (Math.abs(flowPx) < 0.25) flowPx = 0;
+  }
+  colPrev.set(colNow);
+  flowOK = true;
+}
+
+/* 画面座標での地面の高さ（列間を線形補間して滑らかに） */
+function groundY(sx){
+  let c = sx / state.cw * S_W - 0.5;
+  if (c < 0) c = 0;
+  if (c > S_W-1.001) c = S_W-1.001;
+  const i = c|0, f = c-i;
+  const h = hSm[i]*(1-f) + hSm[i+1]*f;
+  return h / S_H * state.ch;
+}
+
+/* ------------------------------------------------------------ 物理 */
+function stepHero(dt){
+  const g = G();
+
+  if (hero.fallT > 0){                    // つまずき中
+    hero.fallT -= dt;
+    hero.y += hero.vy*dt; hero.vy += g*dt;
+    if (hero.fallT <= 0){
+      hero.x = hero.homeX;
+      hero.y = groundY(hero.x) - hero.r - state.ch*0.1;
+      hero.vy = 0; hero.bigJump = false;
+    }
+    return;
+  }
+
+  /* 景色が押してくる量（画面px/フレーム） */
+  const push = flowPx * (state.cw / S_W);
+  hero.face  = push === 0 ? hero.face : (push < 0 ? 1 : -1);
+
+  /* 乗り越えられる段差の上限。
+     キャラは毎フレーム地面に吸着するので、この判定は実質「1フレームでの
+     地面のせり上がり量」を見ていることになる。景色が速く流れるほど同じ坂でも
+     せり上がりが大きくなるため、流れの速さに応じて許容量を広げる。
+     こうしないと高速走行中に地形全部が壁になる。 */
+  const stepTol = hero.r*1.2 + Math.abs(push)*1.3;
+
+  const gy = groundY(hero.x);
+  const feet = hero.y + hero.r;
+
+  /* 壁: 地面が足元よりstepTol以上せり上がってきた（＝地形に埋もれた） */
+  const buried = gy < feet - stepTol;
+
+  if (buried){
+    hero.blocked = Math.min(1, hero.blocked + dt*6);
+    hero.x += push;                       // 景色に押し流される
+    hero.vy = 0;                          // 壁に押し付けられて高さは変わらない
+  } else {
+    hero.blocked = Math.max(0, hero.blocked - dt*3);
+
+    hero.vy += g*dt;
+    if (hero.holding && hero.vy < 0 && hero.holdT < 0.28){   // 長押しで滞空延長
+      hero.vy -= g*0.55*dt; hero.holdT += dt;
+    }
+    hero.y += hero.vy*dt;
+
+    if (hero.y + hero.r >= gy && hero.vy >= 0){
+      hero.y = gy - hero.r;
+      hero.squash = 0.62;
+      hero.vy = -V_HOP * state.ch;        // 自動ホップ（止まっていても生きている）
+      hero.bigJump = false;               // 着地したらまた大ジャンプできる
+    }
+    hero.x += (hero.homeX - hero.x) * Math.min(1, dt*2.2);   // ゆっくり定位置へ
+  }
+
+  /* 画面端まで押されたら つまずき */
+  const m = hero.r*1.6;
+  if (hero.x < m || hero.x > state.cw - m){
+    hero.fallT = 0.7;
+    hero.vy = -state.ch*0.25;
+    state.trip++;
+    document.getElementById('trip').textContent = state.trip;
+    flash();
+  }
+
+  hero.squash += (1 - hero.squash) * Math.min(1, dt*11);
+
+  /* 距離: 画面幅を約8mの景色とみなす */
+  state.dist += Math.abs(push) / state.cw * 8;
+  document.getElementById('dist').textContent = Math.floor(state.dist);
+}
+
+/* ------------------------------------------------------------ 描画 */
+function drawTerrain(){
+  ctx.save();
+  const pts = [];
+  for (let x=0; x<S_W; x++){
+    pts.push([ (x+0.5)/S_W*state.cw, hSm[x]/S_H*state.ch ]);
+  }
+  /* 塗り（ごく薄く） */
+  ctx.beginPath();
+  ctx.moveTo(0, pts[0][1]);
+  for (const p of pts) ctx.lineTo(p[0], p[1]);
+  ctx.lineTo(state.cw, pts[pts.length-1][1]);
+  ctx.lineTo(state.cw, state.ch); ctx.lineTo(0, state.ch);
+  ctx.closePath();
+  const gr = ctx.createLinearGradient(0,0,0,state.ch);
+  gr.addColorStop(0,   'rgba(127,216,255,0.10)');
+  gr.addColorStop(0.6, 'rgba(127,216,255,0.02)');
+  gr.addColorStop(1,   'rgba(127,216,255,0)');
+  ctx.fillStyle = gr; ctx.fill();
+
+  /* 稜線 */
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (const p of pts) ctx.lineTo(p[0], p[1]);
+  ctx.strokeStyle = 'rgba(127,216,255,0.75)';
+  ctx.lineWidth = 1.6; ctx.lineJoin='round'; ctx.stroke();
+  ctx.restore();
+}
+
+const maskCv = document.createElement('canvas');
+const maskCx = maskCv.getContext('2d');
+function drawMask(){
+  if (maskCv.width!==S_W || maskCv.height!==S_H){ maskCv.width=S_W; maskCv.height=S_H; }
+  const im = maskCx.createImageData(S_W,S_H);
+  for (let i=0;i<S_W*S_H;i++){
+    const on=maskBuf[i];
+    im.data[i*4]=on?255:0; im.data[i*4+1]=on?214:0; im.data[i*4+2]=on?107:0;
+    im.data[i*4+3]=on?90:0;
+  }
+  maskCx.putImageData(im,0,0);
+  ctx.save(); ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(maskCv,0,0,state.cw,state.ch); ctx.restore();
+}
+
+function drawHero(){
+  const r = hero.r;
+  const sq = hero.squash;
+  const sx = 1/Math.max(0.35, sq), sy = sq;
+
+  ctx.save();
+
+  /* 影 */
+  const gy = groundY(hero.x);
+  const gap = Math.max(0, Math.min(1, (gy - (hero.y+r)) / (state.ch*0.18)));
+  ctx.globalAlpha = 0.32 * (1-gap);
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.ellipse(hero.x, gy-1, r*(1.05-gap*0.4), r*0.26, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  ctx.translate(hero.x, hero.y);
+  if (hero.fallT > 0) ctx.rotate((0.7-hero.fallT)*7);
+  ctx.scale(sx, sy);
+
+  /* 本体: 明るい面 + 濃い縁取り。どんな映像の上でも輪郭が読める */
+  ctx.beginPath();
+  ctx.moveTo(0,-r);
+  ctx.quadraticCurveTo(r, -r, r, 0);
+  ctx.quadraticCurveTo(r, r*0.98, 0, r*0.98);
+  ctx.quadraticCurveTo(-r, r*0.98, -r, 0);
+  ctx.quadraticCurveTo(-r, -r, 0, -r);
+  ctx.closePath();
+  ctx.fillStyle = hero.blocked > 0.4 ? '#ffd66b' : '#f2f6fa';
+  ctx.fill();
+  ctx.lineWidth = 2.4/Math.max(sx,sy);
+  ctx.strokeStyle = 'rgba(10,13,18,0.85)';
+  ctx.stroke();
+
+  /* 目 */
+  ctx.fillStyle = '#12171f';
+  const ex = r*0.30, ey = -r*0.12, er = r*0.135;
+  ctx.beginPath(); ctx.arc(-ex + hero.face*r*0.10, ey, er, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc( ex + hero.face*r*0.10, ey, er, 0, 7); ctx.fill();
+
+  ctx.restore();
+}
+
+/* ------------------------------------------------------- デモの風景 */
+function drawDemo(t){
+  const {cw, ch} = state;
+  const sky = ctx.createLinearGradient(0,0,0,ch);
+  sky.addColorStop(0,'#1b3a5c'); sky.addColorStop(0.55,'#4a7ba6'); sky.addColorStop(1,'#c4d8e8');
+  ctx.fillStyle = sky; ctx.fillRect(0,0,cw,ch);
+
+  /* 遠景の山 */
+  const layer = (speed, base, amp, color, seed)=>{
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.moveTo(0, ch);
+    const off = t*speed;
+    for (let x=0; x<=cw; x+=8){
+      const u = (x+off)*0.004 + seed;
+      const y = base - (Math.sin(u)*amp + Math.sin(u*2.3+1.7)*amp*0.45 + Math.sin(u*0.6)*amp*0.7);
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(cw, ch); ctx.closePath(); ctx.fill();
+  };
+  layer(28, ch*0.60, ch*0.045, '#6b8fb0', 0);
+  layer(55, ch*0.68, ch*0.055, '#4d6d8c', 3.1);
+
+  /* 近景のビル群（跳び越える対象。詰めすぎると壁だらけになるので間隔は広めに） */
+  ctx.fillStyle = '#2a3a4c';
+  const off = t*150;
+  const SP = cw*0.45;
+  for (let i=-2; i<40; i++){
+    const seed = Math.sin(i*12.9898)*43758.5453;
+    const fr = seed - Math.floor(seed);
+    const w = cw*(0.05 + fr*0.09);
+    const x = i*SP - (off % (SP*40));
+    const h = ch*(0.14 + ((Math.sin(i*7.13)+1)/2)*0.30);
+    ctx.fillRect(x, ch*0.80 - h, w, h+ch*0.2);
+    /* 窓 */
+    ctx.fillStyle='rgba(255,225,160,0.5)';
+    for (let wy=ch*0.80-h+8; wy<ch*0.78; wy+=16)
+      for (let wx=x+5; wx<x+w-7; wx+=13)
+        if (((wx*wy)|0)%7 < 3) ctx.fillRect(wx,wy,5,7);
+    ctx.fillStyle='#2a3a4c';
+  }
+  /* 電柱 */
+  ctx.fillStyle='#1d2833';
+  for (let i=0;i<20;i++){
+    const x = i*cw*0.31 - (t*150 % (cw*0.31*20));
+    ctx.fillRect(x, ch*0.44, 4, ch*0.4);
+    ctx.fillRect(x-14, ch*0.46, 32, 3);
+  }
+  /* 地面 */
+  ctx.fillStyle='#16202a'; ctx.fillRect(0, ch*0.82, cw, ch*0.18);
+}
+
+/* ------------------------------------------------------- メインループ */
+function frame(now){
+  requestAnimationFrame(frame);
+  if (!state.running) return;
+
+  const dt = Math.min(0.033, (now - state.last)/1000 || 0.016);
+  state.last = now; state.t += dt;
+
+  /* モバイルではURLバーの出入りでresizeイベントを取りこぼすことがある */
+  if (window.innerWidth !== state.cw || window.innerHeight !== state.ch) resize();
+
+  /* 1) 背景を描く（映像 or デモ） */
+  if (state.source === 'cam' && cam.readyState >= 2){
+    const vw = cam.videoWidth, vh = cam.videoHeight;
+    const ta = state.cw/state.ch, sa = vw/vh;
+    let sx=0, sy=0, sw=vw, sh=vh;
+    if (sa > ta){ sw = vh*ta; sx = (vw-sw)/2; }
+    else        { sh = vw/ta; sy = (vh-sh)/2; }
+    ctx.drawImage(cam, sx, sy, sw, sh, 0, 0, state.cw, state.ch);
+  } else if (state.source === 'demo'){
+    drawDemo(state.t);
+  } else {
+    ctx.fillStyle='#0a0d12'; ctx.fillRect(0,0,state.cw,state.ch);
+  }
+
+  /* 2) 背景だけを縮小コピーして解析（オーバーレイを描く前に行う） */
+  sctx.drawImage(view, 0, 0, view.width, view.height, 0, 0, S_W, S_H);
+  analyze();
+
+  /* 3) ゲーム */
+  stepHero(dt);
+
+  /* 4) オーバーレイ */
+  if (cfg.mask) drawMask();
+  if (cfg.terrain) drawTerrain();
+  drawHero();
+}
+requestAnimationFrame(frame);
+
+/* ------------------------------------------------------------ 入力 */
+function jump(){
+  if (hero.fallT > 0 || hero.bigJump) return;
+  /* 自動ホップの最中でも受け付ける。「跳ねているのを、さらに大きく跳ばす」感覚 */
+  hero.vy = -V_JUMP*state.ch;
+  hero.bigJump = true;
+  hero.holding = true; hero.holdT = 0;
+  hero.squash = 1.32;
+}
+view.addEventListener('pointerdown', e=>{ e.preventDefault(); jump(); });
+view.addEventListener('pointerup',   ()=>{ hero.holding = false; });
+view.addEventListener('pointercancel',()=>{ hero.holding = false; });
+window.addEventListener('keydown', e=>{ if (e.code==='Space'){ e.preventDefault(); jump(); }});
+window.addEventListener('keyup',   e=>{ if (e.code==='Space') hero.holding=false; });
+
+function flash(){
+  const f=document.getElementById('flash');
+  f.style.opacity='0.18';
+  setTimeout(()=>f.style.opacity='0', 60);
+}
+
+/* ------------------------------------------------------------ 起動 */
+function begin(src){
+  state.source = src;
+  state.running = true;
+  state.last = performance.now();
+  flowOK = false;
+  hero.x = hero.homeX;
+  hero.y = state.ch*0.3;
+  hero.vy = 0;
+  document.getElementById('start').classList.add('hidden');
+}
+
+document.getElementById('btnDemo').onclick = ()=> begin('demo');
+
+document.getElementById('btnCam').onclick = async ()=>{
+  const err = document.getElementById('err');
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:{ ideal:'environment' }, width:{ideal:1280}, height:{ideal:720} },
+      audio:false
+    });
+    cam.srcObject = stream;
+    await cam.play();
+    begin('cam');
+  }catch(e){
+    err.style.display='block';
+    err.textContent = 'カメラを開けませんでした（' + e.name + '）。'
+      + (location.protocol === 'https:' || location.hostname === 'localhost'
+        ? 'ブラウザの設定でカメラを許可してください。'
+        : 'カメラには HTTPS が必要です。GitHub Pages など https:// のURLから開いてください。');
+  }
+};
+
+/* ------------------------------------------------------------ 設定UI */
+const panel = document.getElementById('panel');
+document.getElementById('menuBtn').onclick = ()=> panel.classList.remove('hidden');
+document.getElementById('btnClose').onclick = ()=> panel.classList.add('hidden');
+document.getElementById('btnReset').onclick = ()=>{
+  state.dist=0; state.trip=0;
+  document.getElementById('dist').textContent='0';
+  document.getElementById('trip').textContent='0';
+};
+
+document.querySelectorAll('#segMode button').forEach(b=>{
+  b.onclick = ()=>{
+    document.querySelectorAll('#segMode button').forEach(o=>o.classList.remove('on'));
+    b.classList.add('on');
+    cfg.mode = b.dataset.m;
+    /* モードごとに感度の意味が違うので既定値を入れ直す */
+    cfg.thr = ({sky:90, edge:60, dark:70, bright:80})[cfg.mode];
+    syncUI();
+  };
+});
+const rThr = document.getElementById('rThr'), rSm = document.getElementById('rSm');
+rThr.oninput = ()=>{ cfg.thr = +rThr.value; syncUI(); };
+rSm.oninput  = ()=>{ cfg.smooth = +rSm.value; syncUI(); };
+document.getElementById('tTerrain').onclick = function(){
+  cfg.terrain = !cfg.terrain; this.classList.toggle('on', cfg.terrain);
+};
+document.getElementById('tMask').onclick = function(){
+  cfg.mask = !cfg.mask; this.classList.toggle('on', cfg.mask);
+};
+function syncUI(){
+  rThr.value = cfg.thr; rSm.value = cfg.smooth;
+  document.getElementById('vThr').textContent = cfg.thr;
+  document.getElementById('vSm').textContent  = cfg.smooth + '%';
+}
+
+resize();
+syncUI();
+</script>
+</body>
+</html>
