@@ -70,6 +70,19 @@
     background:transparent;color:var(--dim);font-size:12px;cursor:pointer}
   .toggles button.on{background:rgba(127,216,255,.14);border-color:var(--line);color:var(--line)}
 
+  /* 進行方向の切り替え。窓のどちら側を見ているかで流れる向きが変わるので、
+     設定の中ではなく画面上に常設して片手で押せるようにする。 */
+  #dirBtn{position:fixed;left:14px;bottom:calc(env(safe-area-inset-bottom) + 18px);
+    width:62px;height:62px;border-radius:17px;z-index:5;cursor:pointer;
+    background:rgba(10,13,18,.42);backdrop-filter:blur(6px);
+    border:1px solid rgba(232,238,245,.16);color:var(--fg);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px}
+  #dirBtn span{font-size:23px;line-height:1}
+  #dirBtn i{font-style:normal;font-size:9px;letter-spacing:.14em;color:var(--dim)}
+  /* 設定と実際の流れが逆のときの合図。明滅はさせず色だけ静かに変える */
+  #dirBtn.warn{border-color:rgba(255,214,107,.75);color:var(--accent)}
+  #dirBtn.warn i{color:var(--accent)}
+
   #flash{position:fixed;inset:0;pointer-events:none;background:#fff;opacity:0;
     transition:opacity .25s}
 </style>
@@ -86,6 +99,8 @@
   <div class="stat right"><b id="trip">0</b><span>つまずき</span></div>
 </div>
 
+<button id="dirBtn"><span id="dirArrow">→</span><i>むき</i></button>
+
 <!-- スタート -->
 <div class="sheet" id="start">
   <div class="card">
@@ -93,7 +108,8 @@
     <p class="lead">
       カメラに映った景色の<em>輪郭</em>が、そのまま地面になります。<br>
       窓の外へ向けてください。小さなキャラクターが、流れる景色の上を跳ねていきます。<br><br>
-      <em>タップでジャンプ。長押しで高く。</em>
+      <em>タップでジャンプ。もう一度タップで二段ジャンプ。長押しで高く。</em><br>
+      左下の <em>むき</em> ボタンで、景色が流れてくる向きを入れ替えられます。
     </p>
     <button class="big" id="btnCam">カメラで始める</button>
     <button class="ghost" id="btnDemo">デモで試す（カメラなし）</button>
@@ -155,7 +171,9 @@ let   S_H = 90;
 const small  = document.createElement('canvas');
 const sctx   = small.getContext('2d', { willReadFrequently:true });
 
-const cfg = { mode:'sky', thr:90, smooth:45, terrain:true, mask:false };
+/* flip: false = 景色が左へ流れる（地形は右から来る）。true でその逆。
+   電車のどちら側の窓を見るかで流れる向きが変わるので、ワンタッチで入れ替える。 */
+const cfg = { mode:'sky', thr:90, smooth:45, terrain:true, mask:false, flip:false };
 const state = {
   source:'none',      // 'cam' | 'demo'
   cw:0, ch:0, dpr:1,
@@ -193,18 +211,27 @@ function resize(){
   allocBuffers();
 
   hero.r = Math.max(9, Math.min(state.cw, state.ch) * 0.028);
-  hero.homeX = state.cw * 0.36;
+  applyFlip();
   if (!state.running) hero.x = hero.homeX;
+}
+
+/* 定位置は「地形が来る側」の反対に置く。押し流されるぶんの助走を確保するため。 */
+function applyFlip(){
+  hero.homeX = state.cw * (cfg.flip ? 0.64 : 0.36);
+  hero.face  = cfg.flip ? -1 : 1;
 }
 window.addEventListener('resize', resize);
 
 /* ------------------------------------------------------------ キャラ */
 const hero = {
+  mode:'run',       // 'run' 走行中 / 'fall' つまずいて落ちている / 'drop' 上から投入中
   x:0, y:0, vy:0, r:14, homeX:0,
   holding:false, holdT:0,
   squash:1, blocked:0, face:1,
-  bigJump:false,    // 小さな自動ホップ中はいつでも大ジャンプに切り替えられる
-  fallT:0,          // >0 のあいだ「つまずき」演出
+  jumps:2,          // 残りジャンプ回数。着地で 2 に戻る（自動ホップは消費しない）
+  fallT:0, spin:0,  // つまずき演出
+  safeT:0,          // 投入直後の無敵時間。着地した瞬間に押し出されるのを防ぐ
+  ringT:0, ringX:0, ringY:0,   // 二段ジャンプの輪
 };
 
 function G(){ return state.ch * 2.6; }          // 重力
@@ -334,23 +361,78 @@ function groundY(sx){
 }
 
 /* ------------------------------------------------------------ 物理 */
+/* 投入先を選ぶ。地面が低く（＝頭上に余裕があり）平らで、定位置に近い場所。 */
+function pickDropX(){
+  let bestX = hero.homeX, best = -Infinity;
+  for (let x = state.cw*0.18; x <= state.cw*0.82; x += state.cw*0.02){
+    const c = Math.round(x/state.cw*S_W);
+    let h = 0, rough = 0;
+    for (let k=-3; k<=3; k++){
+      const j = Math.min(S_W-1, Math.max(0, c+k));
+      h += hSm[j];
+      if (k > -3) rough += Math.abs(hSm[j] - hSm[Math.max(0, j-1)]);
+    }
+    h /= 7;
+    const score = (h/S_H) - (rough/S_H)*0.8 - Math.abs(x-hero.homeX)/state.cw*0.5;
+    if (score > best){ best = score; bestX = x; }
+  }
+  return bestX;
+}
+
+function trip(){
+  hero.mode = 'fall';
+  hero.fallT = 0;
+  hero.spin = 0;
+  hero.vy = -state.ch*0.30;               // いったん上に弾かれてから落ちる
+  state.trip++;
+  document.getElementById('trip').textContent = state.trip;
+  flash();
+}
+
+function startDrop(){
+  hero.mode = 'drop';
+  hero.x = pickDropX();
+  hero.y = -hero.r*3;
+  hero.vy = 0;
+  hero.spin = 0;
+  hero.squash = 1.25;                     // 落ちてくる間は少し縦に伸びる
+}
+
 function stepHero(dt){
   const g = G();
+  /* 景色が押してくる量（画面px/フレーム） */
+  const push = flowPx * (state.cw / S_W);
 
-  if (hero.fallT > 0){                    // つまずき中
-    hero.fallT -= dt;
-    hero.y += hero.vy*dt; hero.vy += g*dt;
-    if (hero.fallT <= 0){
-      hero.x = hero.homeX;
-      hero.y = groundY(hero.x) - hero.r - state.ch*0.1;
-      hero.vy = 0; hero.bigJump = false;
-    }
+  /* --- つまずいて落ちている --- */
+  if (hero.mode === 'fall'){
+    hero.fallT += dt;
+    hero.vy += g*dt;
+    hero.y += hero.vy*dt;
+    hero.x += push;
+    hero.spin += dt*9;
+    if (hero.y > state.ch + hero.r*4 || hero.fallT > 1.4) startDrop();
     return;
   }
 
-  /* 景色が押してくる量（画面px/フレーム） */
-  const push = flowPx * (state.cw / S_W);
-  hero.face  = push === 0 ? hero.face : (push < 0 ? 1 : -1);
+  /* --- 上から投入中 --- */
+  if (hero.mode === 'drop'){
+    hero.vy += g*dt;
+    hero.y  += hero.vy*dt;
+    const gd = groundY(hero.x);
+    if (hero.y + hero.r >= gd && hero.vy > 0){
+      hero.y = gd - hero.r;
+      hero.vy = -V_HOP*state.ch;
+      hero.squash = 0.45;                 // 着地はしっかり潰す
+      hero.mode = 'run';
+      hero.jumps = 2;
+      hero.safeT = 0.5;
+    }
+    hero.squash += (1 - hero.squash) * Math.min(1, dt*6);
+    return;
+  }
+
+  /* --- 走行中 --- */
+  hero.safeT = Math.max(0, hero.safeT - dt);
 
   /* 乗り越えられる段差の上限。
      キャラは毎フレーム地面に吸着するので、この判定は実質「1フレームでの
@@ -365,7 +447,12 @@ function stepHero(dt){
   /* 壁: 地面が足元よりstepTol以上せり上がってきた（＝地形に埋もれた） */
   const buried = gy < feet - stepTol;
 
-  if (buried){
+  if (buried && hero.safeT > 0){
+    /* 投入直後だけは救済。埋もれていたら押し流さずに地面へ引き上げる。
+       着地した瞬間に壁だった、で連続つまずきになるのを防ぐ。 */
+    hero.y = gy - hero.r;
+    hero.vy = 0;
+  } else if (buried){
     hero.blocked = Math.min(1, hero.blocked + dt*6);
     hero.x += push;                       // 景色に押し流される
     hero.vy = 0;                          // 壁に押し付けられて高さは変わらない
@@ -382,22 +469,17 @@ function stepHero(dt){
       hero.y = gy - hero.r;
       hero.squash = 0.62;
       hero.vy = -V_HOP * state.ch;        // 自動ホップ（止まっていても生きている）
-      hero.bigJump = false;               // 着地したらまた大ジャンプできる
+      hero.jumps = 2;                     // 着地でジャンプ回数が戻る
     }
     hero.x += (hero.homeX - hero.x) * Math.min(1, dt*2.2);   // ゆっくり定位置へ
   }
 
   /* 画面端まで押されたら つまずき */
   const m = hero.r*1.6;
-  if (hero.x < m || hero.x > state.cw - m){
-    hero.fallT = 0.7;
-    hero.vy = -state.ch*0.25;
-    state.trip++;
-    document.getElementById('trip').textContent = state.trip;
-    flash();
-  }
+  if (hero.x < m || hero.x > state.cw - m) trip();
 
   hero.squash += (1 - hero.squash) * Math.min(1, dt*11);
+  if (hero.ringT > 0) hero.ringT -= dt;
 
   /* 距離: 画面幅を約8mの景色とみなす */
   state.dist += Math.abs(push) / state.cw * 8;
@@ -455,10 +537,35 @@ function drawHero(){
 
   ctx.save();
 
-  /* 影 */
+  /* 投入中は落下地点を細い縦線で示す。どこに戻るのか事前に見えるように。 */
+  if (hero.mode === 'drop'){
+    const gd = groundY(hero.x);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,214,107,0.6)';
+    ctx.lineWidth = 1.3; ctx.setLineDash([4,6]);
+    ctx.beginPath(); ctx.moveTo(hero.x, hero.y+r); ctx.lineTo(hero.x, gd); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.ellipse(hero.x, gd, r*0.9, r*0.24, 0, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
+
+  /* 二段ジャンプの踏み切り跡。広がって消える細い輪だけ。 */
+  if (hero.ringT > 0){
+    const p = 1 - hero.ringT/0.34;
+    ctx.save();
+    ctx.globalAlpha = (1-p)*0.7;
+    ctx.strokeStyle = '#f2f6fa'; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.ellipse(hero.ringX, hero.ringY, r*(0.5+p*1.5), r*(0.16+p*0.5), 0, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /* 影。落下中と地面より下にいるときは出さない */
   const gy = groundY(hero.x);
   const gap = Math.max(0, Math.min(1, (gy - (hero.y+r)) / (state.ch*0.18)));
-  ctx.globalAlpha = 0.32 * (1-gap);
+  const noShadow = hero.mode === 'fall' || hero.y + r > gy + 2;
+  ctx.globalAlpha = noShadow ? 0 : 0.32 * (1-gap);
   ctx.fillStyle = '#000';
   ctx.beginPath();
   ctx.ellipse(hero.x, gy-1, r*(1.05-gap*0.4), r*0.26, 0, 0, Math.PI*2);
@@ -466,7 +573,7 @@ function drawHero(){
   ctx.globalAlpha = 1;
 
   ctx.translate(hero.x, hero.y);
-  if (hero.fallT > 0) ctx.rotate((0.7-hero.fallT)*7);
+  if (hero.mode === 'fall') ctx.rotate(hero.spin);
   ctx.scale(sx, sy);
 
   /* 本体: 明るい面 + 濃い縁取り。どんな映像の上でも輪郭が読める */
@@ -490,6 +597,25 @@ function drawHero(){
   ctx.beginPath(); ctx.arc( ex + hero.face*r*0.10, ey, er, 0, 7); ctx.fill();
 
   ctx.restore();
+}
+
+/* 設定した「むき」と実際に測れている流れが食い違っていないか見張る。
+   電車のどちら側の窓かは本人にも咄嗟に判断しにくいので、ボタン側から知らせる。
+   一瞬の逆流（対向列車など）で反応しないよう、1.2秒ぶん食い違って初めて点ける。 */
+let mismatch = 0, warnOn = false;
+function checkDirection(dt){
+  const want = cfg.flip ? 1 : -1;
+  if (Math.abs(flowPx) > 0.4){
+    mismatch += (Math.sign(flowPx) !== want) ? dt : -dt*2;
+    mismatch = Math.max(0, Math.min(2, mismatch));
+  } else {
+    mismatch = Math.max(0, mismatch - dt*0.5);
+  }
+  const on = mismatch > 1.2;
+  if (on !== warnOn){
+    warnOn = on;
+    document.getElementById('dirBtn').classList.toggle('warn', on);
+  }
 }
 
 /* ------------------------------------------------------- デモの風景 */
@@ -523,6 +649,7 @@ function drawDemo(t){
     const fr = seed - Math.floor(seed);
     const w = cw*(0.05 + fr*0.09);
     const x = i*SP - (off % (SP*40));
+    if (x > cw || x + w < 0) continue;      // 画面外は描かない（窓の二重ループが重い）
     const h = ch*(0.14 + ((Math.sin(i*7.13)+1)/2)*0.30);
     ctx.fillRect(x, ch*0.80 - h, w, h+ch*0.2);
     /* 窓 */
@@ -536,6 +663,7 @@ function drawDemo(t){
   ctx.fillStyle='#1d2833';
   for (let i=0;i<20;i++){
     const x = i*cw*0.31 - (t*150 % (cw*0.31*20));
+    if (x > cw+20 || x < -20) continue;
     ctx.fillRect(x, ch*0.44, 4, ch*0.4);
     ctx.fillRect(x-14, ch*0.46, 32, 3);
   }
@@ -574,6 +702,7 @@ function frame(now){
 
   /* 3) ゲーム */
   stepHero(dt);
+  checkDirection(dt);
 
   /* 4) オーバーレイ */
   if (cfg.mask) drawMask();
@@ -584,12 +713,16 @@ requestAnimationFrame(frame);
 
 /* ------------------------------------------------------------ 入力 */
 function jump(){
-  if (hero.fallT > 0 || hero.bigJump) return;
+  if (hero.mode !== 'run' || hero.jumps <= 0) return;
   /* 自動ホップの最中でも受け付ける。「跳ねているのを、さらに大きく跳ばす」感覚 */
-  hero.vy = -V_JUMP*state.ch;
-  hero.bigJump = true;
+  const second = (hero.jumps === 1);
+  hero.vy = -V_JUMP * state.ch * (second ? 0.86 : 1);
+  hero.jumps--;
   hero.holding = true; hero.holdT = 0;
   hero.squash = 1.32;
+  if (second){                        // 二段目は空中で踏み切った印を残す
+    hero.ringT = 0.34; hero.ringX = hero.x; hero.ringY = hero.y + hero.r;
+  }
 }
 view.addEventListener('pointerdown', e=>{ e.preventDefault(); jump(); });
 view.addEventListener('pointerup',   ()=>{ hero.holding = false; });
@@ -609,9 +742,14 @@ function begin(src){
   state.running = true;
   state.last = performance.now();
   flowOK = false;
+  applyFlip();
+  hero.mode = 'run';
   hero.x = hero.homeX;
   hero.y = state.ch*0.3;
   hero.vy = 0;
+  hero.jumps = 2;
+  hero.safeT = 0.5;
+  hero.ringT = 0; hero.spin = 0; hero.blocked = 0;
   document.getElementById('start').classList.add('hidden');
 }
 
@@ -637,6 +775,12 @@ document.getElementById('btnCam').onclick = async ()=>{
 };
 
 /* ------------------------------------------------------------ 設定UI */
+document.getElementById('dirBtn').onclick = ()=>{
+  cfg.flip = !cfg.flip;
+  applyFlip();
+  document.getElementById('dirArrow').textContent = cfg.flip ? '←' : '→';
+};
+
 const panel = document.getElementById('panel');
 document.getElementById('menuBtn').onclick = ()=> panel.classList.remove('hidden');
 document.getElementById('btnClose').onclick = ()=> panel.classList.add('hidden');
